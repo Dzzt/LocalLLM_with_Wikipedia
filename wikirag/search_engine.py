@@ -1,0 +1,778 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+import sqlite3
+import unicodedata
+
+import faiss
+import numpy as np
+
+from .embedding import OllamaEmbedder
+from .models import BuildConfig
+from .utils import normalize_title, read_json
+
+
+EXACT_TITLE_BOOST = 0.30
+COMPACT_TITLE_BOOST = 0.28
+PARTIAL_TITLE_BOOST = 0.10
+INTENT_SECTION_BOOST = 0.05
+DISAMBIGUATION_PENALTY = -0.08
+
+
+ARTICLE_FOCUS_EXACT_BONUS = 0.18
+ARTICLE_FOCUS_TOKEN_BONUS = 0.035
+ARTICLE_FOCUS_TOKEN_CAP = 0.14
+
+REQUEST_SUFFIXES = (
+    "について詳しく教えてください", "について詳しく教えて",
+    "について説明してください", "について説明して",
+    "について解説してください", "について解説して",
+    "について教えてください", "について教えて", "について知りたい",
+    "を詳しく教えてください", "を詳しく教えて",
+    "を説明してください", "を説明して",
+    "を解説してください", "を解説して",
+    "を教えてください", "を教えて",
+    "とは何ですか", "とは", "について",
+)
+
+ARTICLE_SPLIT_MARKERS = ("の", "について", "を", "とは")
+
+# These are deliberately modest. Vector similarity remains the main ranking signal.
+STORY_QUERY_TERMS = (
+    "ストーリー",
+    "物語",
+    "あらすじ",
+    "シナリオ",
+    "世界観",
+    "設定",
+    "プロット",
+)
+STORY_SECTION_TERMS = (
+    "ストーリー",
+    "物語",
+    "あらすじ",
+    "シナリオ",
+    "プロット",
+)
+
+
+@dataclass(slots=True)
+class Result:
+    chunk_id: int
+    score: float
+    vector_score: float
+    title_boost: float
+    quality_adjustment: float
+    title: str
+    url: str
+    section: str
+    chunk_no: int
+    chunk_count: int
+    text: str
+    page_type: str
+    match_source: str
+
+
+def compact_title(value: str) -> str:
+    """Comparison key that ignores width, case, whitespace, punctuation and symbols."""
+    value = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(ch for ch in value if ch.isalnum())
+
+
+def alnum_boundary_title(value: str) -> str:
+    """Normalize width/case/spacing and ignore spaces only at ASCII letter-number boundaries."""
+    value = normalize_title(value)
+    value = re.sub(r"(?<=[a-z])\s+(?=[0-9])", "", value)
+    value = re.sub(r"(?<=[0-9])\s+(?=[a-z])", "", value)
+    return value
+
+
+def alnum_boundary_variants(value: str) -> set[str]:
+    """Generate indexed-title forms for cases such as Fallout3/Fallout 3."""
+    normalized = normalize_title(value)
+    variants = {normalized}
+    variants.add(re.sub(r"(?<=[a-z])\s+(?=[0-9])", "", normalized))
+    variants.add(re.sub(r"(?<=[0-9])\s+(?=[a-z])", "", normalized))
+    spaced = re.sub(r"(?<=[a-z])(?=[0-9])", " ", normalized)
+    spaced = re.sub(r"(?<=[0-9])(?=[a-z])", " ", spaced)
+    variants.add(spaced)
+    return {item for item in variants if item}
+
+
+def fts_phrase(value: str) -> str:
+    """Quote a value safely for an FTS5 phrase query."""
+    return '"' + value.replace('"', '""') + '"'
+
+
+class SearchEngine:
+    def __init__(self, index_dir: Path) -> None:
+        self.index_dir = Path(index_dir)
+        configuration = read_json(self.index_dir / "config.json")
+        self.build_config = BuildConfig(**configuration["build"])
+        self.index_config = configuration["index"]
+        self.embedder = OllamaEmbedder(self.build_config)
+
+        self.connection = sqlite3.connect(
+            self.index_dir / "metadata.sqlite",
+            check_same_thread=False,
+        )
+
+        self.shards: list[tuple[dict, object, np.memmap | None]] = []
+        self.shards_by_number: dict[
+            int,
+            tuple[dict, object, np.memmap | None],
+        ] = {}
+
+        for manifest_path in sorted(self.index_dir.glob("shard_*.json")):
+            manifest = read_json(manifest_path)
+            index = faiss.read_index(
+                str(self.index_dir / manifest["faiss_file"])
+            )
+            index.nprobe = int(self.index_config["nprobe"])
+
+            f16 = None
+            if manifest.get("float16_file"):
+                f16 = np.memmap(
+                    self.index_dir / manifest["float16_file"],
+                    mode="r",
+                    dtype=np.float16,
+                    shape=(
+                        int(manifest["chunk_count"]),
+                        self.build_config.embedding_dimension,
+                    ),
+                )
+
+            entry = (manifest, index, f16)
+            self.shards.append(entry)
+            self.shards_by_number[int(manifest["shard_no"])] = entry
+
+    def get_combined_article(self, chunk_id: int) -> dict:
+        """Return every stored chunk for the article containing ``chunk_id``."""
+        target = self.connection.execute(
+            "SELECT article_id, title, COALESCE(url, '') "
+            "FROM chunks WHERE chunk_id=?",
+            (chunk_id,),
+        ).fetchone()
+        if target is None:
+            raise LookupError("指定された検索結果が見つかりません。")
+
+        article_id, title, url = target
+        rows = self.connection.execute(
+            "SELECT chunk_no, chunk_count, text "
+            "FROM chunks WHERE article_id=? ORDER BY chunk_no",
+            (article_id,),
+        ).fetchall()
+        if not rows:
+            raise LookupError("記事本文のチャンクが見つかりません。")
+
+        return {
+            "article_id": article_id,
+            "title": str(title),
+            "url": str(url),
+            "chunk_count": len(rows),
+            # The index was built with overlap. It is intentionally retained
+            # here so this view represents the exact stored chunks.
+            "text": "\n\n".join(str(row[2]) for row in rows),
+        }
+
+    def _rerank_vector(
+        self,
+        query_vector: np.ndarray,
+        shard_no: int,
+        vector_row: int,
+    ) -> float | None:
+        shard = self.shards_by_number.get(shard_no)
+        if shard is None:
+            return None
+        f16 = shard[2]
+        if f16 is None:
+            return None
+        return float(
+            np.dot(
+                np.asarray(f16[vector_row], dtype=np.float32),
+                query_vector,
+            )
+        )
+
+    def _title_matches(
+        self,
+        normalized_query: str,
+    ) -> tuple[dict[int, float], dict[int, set[str]], set[tuple[str, str]]]:
+        """
+        Return:
+          chunk title boosts,
+          match-source labels,
+          article keys that count as exact/compact title matches.
+        """
+        boosts: dict[int, float] = {}
+        sources: dict[int, set[str]] = {}
+        exact_articles: set[tuple[str, str]] = set()
+
+        # Normal exact match first.
+        exact_rows = self.connection.execute(
+            "SELECT chunk_id, title, COALESCE(url, '') "
+            "FROM chunks WHERE normalized_title=? LIMIT 1000",
+            (normalized_query,),
+        ).fetchall()
+
+        for chunk_id, title, url in exact_rows:
+            chunk_id = int(chunk_id)
+            boosts[chunk_id] = max(boosts.get(chunk_id, 0.0), EXACT_TITLE_BOOST)
+            sources.setdefault(chunk_id, set()).add("title_exact")
+            exact_articles.add((str(title), str(url)))
+
+        # If a normal exact title match exists, do not run the broader FTS
+        # query. On a multi-million-chunk database that extra query can be
+        # disproportionately expensive and is unnecessary.
+        query_compact = compact_title(normalized_query)
+        if exact_rows:
+            return boosts, sources, exact_articles
+
+        # FTS supplies a bounded candidate set only when exact matching failed.
+        if len(query_compact) >= 2:
+            try:
+                fts_rows = self.connection.execute(
+                    "SELECT c.chunk_id, c.title, COALESCE(c.url, '') "
+                    "FROM title_fts f "
+                    "JOIN chunks c ON c.chunk_id=f.chunk_id "
+                    "WHERE title_fts MATCH ? "
+                    "LIMIT 500",
+                    (fts_phrase(normalized_query),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                fts_rows = []
+
+            # A phrase query can miss spacing variants such as Fallout3/Fallout 3.
+            # If so, use the longest alphanumeric fragments as a broader FTS query.
+            if not fts_rows:
+                fragments = re.findall(r"[0-9A-Za-z]+|[\u3040-\u30ff\u3400-\u9fff]+", normalized_query)
+                if fragments:
+                    broad_query = " AND ".join(fts_phrase(x) for x in fragments[:6])
+                    try:
+                        fts_rows = self.connection.execute(
+                            "SELECT c.chunk_id, c.title, COALESCE(c.url, '') "
+                            "FROM title_fts f "
+                            "JOIN chunks c ON c.chunk_id=f.chunk_id "
+                            "WHERE title_fts MATCH ? "
+                            "LIMIT 500",
+                            (broad_query,),
+                        ).fetchall()
+                    except sqlite3.OperationalError:
+                        fts_rows = []
+
+            for chunk_id, title, url in fts_rows:
+                chunk_id = int(chunk_id)
+                title_text = str(title)
+                url_text = str(url)
+                title_compact = compact_title(title_text)
+
+                # Exact after removing spaces/punctuation/full-width differences.
+                compact_equal = title_compact == query_compact
+
+                # Allow a disambiguator suffix: "Fallout 3 (ゲーム)".
+                compact_prefix = (
+                    title_compact.startswith(query_compact)
+                    and len(title_compact) <= len(query_compact) + 12
+                )
+
+                if compact_equal or compact_prefix:
+                    boosts[chunk_id] = max(
+                        boosts.get(chunk_id, 0.0),
+                        COMPACT_TITLE_BOOST,
+                    )
+                    sources.setdefault(chunk_id, set()).add("title_compact")
+                    exact_articles.add((title_text, url_text))
+                else:
+                    boosts[chunk_id] = max(
+                        boosts.get(chunk_id, 0.0),
+                        PARTIAL_TITLE_BOOST,
+                    )
+                    sources.setdefault(chunk_id, set()).add("title_partial")
+
+        return boosts, sources, exact_articles
+
+    def _detect_article_focus(self, query: str) -> tuple[str, str, str] | None:
+        """Find an article title at the beginning of a natural-language query.
+
+        Matching is attempted in three stages:
+        1. normalized exact match;
+        2. ASCII letter-number boundary match (Fallout3 == Fallout 3);
+        3. unique compact match that ignores spaces and punctuation.
+
+        Returns (article_id, title, residual_query). The broader stages are
+        deliberately conservative so ordinary semantic search remains the fallback.
+        """
+        normalized = normalize_title(query)
+        candidates = [normalized]
+
+        # Japanese queries commonly start with "<article title>の...".
+        for marker in ARTICLE_SPLIT_MARKERS:
+            start = 0
+            while True:
+                pos = normalized.find(marker, start)
+                if pos < 0:
+                    break
+                candidate = normalized[:pos].strip(" 　・、,。")
+                if len(candidate) >= 2:
+                    candidates.append(candidate)
+                start = pos + len(marker)
+
+        def finish(article_id: str, title: str, candidate: str) -> tuple[str, str, str]:
+            residual = normalized
+            candidate_norm = normalize_title(candidate)
+            title_norm = normalize_title(title)
+
+            # Remove the actually typed prefix first. This also works when the
+            # canonical title contains spaces or punctuation absent from the query.
+            if residual.startswith(candidate_norm):
+                residual = residual[len(candidate_norm):].strip()
+            elif residual.startswith(title_norm):
+                residual = residual[len(title_norm):].strip()
+
+            residual = residual.lstrip("のをについて、,。 　")
+            changed = True
+            while changed and residual:
+                changed = False
+                for suffix in REQUEST_SUFFIXES:
+                    if residual.endswith(suffix):
+                        residual = residual[:-len(suffix)].strip()
+                        changed = True
+                        break
+            return article_id, title, residual or title
+
+        ordered = sorted(set(candidates), key=len, reverse=True)
+
+        # Stage 1: indexed normalized exact match.
+        for candidate in ordered:
+            row = self.connection.execute(
+                "SELECT article_id, title FROM chunks "
+                "WHERE normalized_title=? ORDER BY chunk_no LIMIT 1",
+                (candidate,),
+            ).fetchone()
+            if row is not None:
+                return finish(str(row[0]), str(row[1]), candidate)
+
+        # Stage 2: ignore only spaces at ASCII letter-number boundaries.
+        # Query a small set of index-friendly variants, then verify equivalence.
+        for candidate in ordered:
+            variants = sorted(alnum_boundary_variants(candidate))
+            placeholders = ",".join("?" for _ in variants)
+            rows = self.connection.execute(
+                f"SELECT article_id, title, normalized_title FROM chunks "
+                f"WHERE normalized_title IN ({placeholders}) "
+                "GROUP BY article_id, title, normalized_title LIMIT 20",
+                variants,
+            ).fetchall()
+            matches = [
+                (str(row[0]), str(row[1]))
+                for row in rows
+                if alnum_boundary_title(str(row[2])) == alnum_boundary_title(candidate)
+            ]
+            unique = list(dict.fromkeys(matches))
+            if len(unique) == 1:
+                return finish(unique[0][0], unique[0][1], candidate)
+
+        # Stage 3: unique compact match. Use title FTS only to bound candidates,
+        # then verify after removing spaces and punctuation. Short compact keys are
+        # excluded because collisions become common.
+        for candidate in ordered:
+            compact = compact_title(candidate)
+            if len(compact) < 5:
+                continue
+
+            fragments = re.findall(
+                r"[0-9A-Za-z]{3,}|[\u3040-\u30ff\u3400-\u9fff]{3,}",
+                unicodedata.normalize("NFKC", candidate),
+            )
+            if not fragments:
+                continue
+            fragments.sort(key=len, reverse=True)
+            broad_query = " AND ".join(fts_phrase(x) for x in fragments[:4])
+            try:
+                rows = self.connection.execute(
+                    "SELECT c.article_id, c.title "
+                    "FROM title_fts f JOIN chunks c ON c.chunk_id=f.chunk_id "
+                    "WHERE title_fts MATCH ? "
+                    "GROUP BY c.article_id, c.title LIMIT 2000",
+                    (broad_query,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+
+            matches = [
+                (str(row[0]), str(row[1]))
+                for row in rows
+                if compact_title(str(row[1])) == compact
+            ]
+            unique = list(dict.fromkeys(matches))
+            if len(unique) == 1:
+                return finish(unique[0][0], unique[0][1], candidate)
+
+        return None
+
+    @staticmethod
+    def _focus_terms(residual: str) -> list[str]:
+        terms = re.findall(
+            r"[0-9A-Za-z][0-9A-Za-z_.+\-]{1,}|[\u30A0-\u30FFー]{2,}|[\u3400-\u9FFF\u3040-\u309F]{2,}",
+            residual,
+        )
+        stop = {"教えて", "ください", "について", "とは", "何ですか"}
+        return [term for term in terms if term not in stop][:8]
+
+    def _search_article_focus(self, query: str, top_k: int) -> list[Result] | None:
+        detected = self._detect_article_focus(query)
+        if detected is None:
+            return None
+
+        article_id, _title, residual = detected
+        query_vector = self.embedder.embed_query(residual)
+        terms = self._focus_terms(residual)
+        residual_compact = compact_title(residual)
+
+        rows = self.connection.execute(
+            "SELECT chunk_id, title, COALESCE(url, ''), COALESCE(section, ''), "
+            "chunk_no, chunk_count, text, page_type, quality_weight, "
+            "vector_shard, vector_row FROM chunks "
+            "WHERE article_id=? ORDER BY chunk_no",
+            (article_id,),
+        ).fetchall()
+        if not rows:
+            return []
+
+        scored = []
+        for row in rows:
+            chunk_id = int(row[0])
+            vector_score = self._rerank_vector(
+                query_vector, int(row[9]), int(row[10])
+            )
+            if vector_score is None:
+                vector_score = 0.0
+
+            searchable = f"{row[3]}\n{row[6]}"
+            searchable_compact = compact_title(searchable)
+            lexical = 0.0
+            sources = {"article_focus", "vector_exact"}
+            if residual_compact and residual_compact in searchable_compact:
+                lexical += ARTICLE_FOCUS_EXACT_BONUS
+                sources.add("focus_phrase")
+            matched_terms = sum(1 for term in terms if compact_title(term) in searchable_compact)
+            if matched_terms:
+                lexical += min(
+                    ARTICLE_FOCUS_TOKEN_CAP,
+                    matched_terms * ARTICLE_FOCUS_TOKEN_BONUS,
+                )
+                sources.add("focus_terms")
+
+            quality_adjustment = (float(row[8]) - 1.0) * 0.25
+            if row[7] == "disambiguation":
+                quality_adjustment += DISAMBIGUATION_PENALTY
+            final_score = vector_score + lexical + quality_adjustment
+            scored.append((final_score, vector_score, lexical, quality_adjustment, row, sources))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        results = []
+        for final_score, vector_score, lexical, quality_adjustment, row, sources in scored[:top_k]:
+            results.append(Result(
+                chunk_id=int(row[0]), score=float(final_score),
+                vector_score=float(vector_score), title_boost=float(lexical),
+                quality_adjustment=float(quality_adjustment), title=str(row[1]),
+                url=str(row[2]), section=str(row[3]), chunk_no=int(row[4]),
+                chunk_count=int(row[5]), text=str(row[6]), page_type=str(row[7]),
+                match_source="+".join(sorted(sources)),
+            ))
+        return results
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 6,
+        mode: str = "auto",
+    ) -> list[Result]:
+        query = query.strip()
+        if not query:
+            return []
+        if mode not in {"auto", "legacy_auto", "strict", "balanced", "discovery", "article_focus"}:
+            raise ValueError(f"Unknown search mode: {mode}")
+
+        # Default auto mode first tries the two-stage article-focused search.
+        # If no exact leading article title is found, it falls back to the
+        # previous automatic search unchanged.
+        if mode in {"auto", "article_focus"}:
+            focused = self._search_article_focus(query, top_k)
+            if focused is not None:
+                return focused
+            mode = "auto"
+
+        # Explicit comparison / rollback mode: always use the old auto path.
+        if mode == "legacy_auto":
+            mode = "auto"
+
+        query_vector = self.embedder.embed_query(query)
+        candidate_count = int(self.index_config["candidate_count"])
+
+        per_shard = max(
+            20,
+            min(
+                candidate_count,
+                candidate_count // max(1, len(self.shards)) * 3,
+            ),
+        )
+
+        vector_scores: dict[int, float] = {}
+        match_sources: dict[int, set[str]] = {}
+
+        for _, index, _ in self.shards:
+            scores, ids = index.search(
+                query_vector.reshape(1, -1),
+                per_shard,
+            )
+            for score, chunk_id in zip(scores[0], ids[0]):
+                chunk_id = int(chunk_id)
+                if chunk_id < 0:
+                    continue
+                vector_scores[chunk_id] = max(
+                    float(score),
+                    vector_scores.get(chunk_id, -1e9),
+                )
+                match_sources.setdefault(chunk_id, set()).add("vector")
+
+        normalized_query = self._normalize_query_title(query)
+        title_boosts, title_sources, exact_articles = self._title_matches(
+            normalized_query
+        )
+        for chunk_id, labels in title_sources.items():
+            match_sources.setdefault(chunk_id, set()).update(labels)
+
+        # _title_matches() already returns every chunk of a normal exact-title
+        # article through the indexed normalized_title lookup. Re-querying by
+        # title+URL would cause a full scan because that pair is not indexed.
+        # Compact/FTS matches likewise contribute their matched chunk IDs here.
+        article_internal_ids: set[int] = set(title_boosts)
+
+        for chunk_id in article_internal_ids:
+            match_sources.setdefault(chunk_id, set()).add("article_internal")
+
+        all_ids = set(vector_scores) | set(title_boosts)
+        if not all_ids:
+            return []
+
+        id_list = list(all_ids)
+        placeholders = ",".join("?" for _ in id_list)
+        metadata_rows = self.connection.execute(
+            f"SELECT chunk_id, title, COALESCE(url, ''), COALESCE(section, ''), "
+            f"chunk_no, chunk_count, text, page_type, quality_weight, "
+            f"vector_shard, vector_row "
+            f"FROM chunks WHERE chunk_id IN ({placeholders})",
+            id_list,
+        ).fetchall()
+
+        metadata = {int(row[0]): row for row in metadata_rows}
+
+        use_f16 = bool(
+            self.index_config.get("use_float16_rerank", False)
+        )
+        if use_f16:
+            for chunk_id in all_ids:
+                row = metadata.get(chunk_id)
+                if row is None:
+                    continue
+                reranked = self._rerank_vector(
+                    query_vector,
+                    int(row[9]),
+                    int(row[10]),
+                )
+                if reranked is not None:
+                    vector_scores[chunk_id] = reranked
+
+        story_intent = any(term in query for term in STORY_QUERY_TERMS)
+
+        scored: list[
+            tuple[int, float, float, float, float, str, bool]
+        ] = []
+
+        for chunk_id in all_ids:
+            row = metadata.get(chunk_id)
+            if row is None:
+                continue
+
+            vector_score = vector_scores.get(chunk_id, 0.0)
+            title_boost = title_boosts.get(chunk_id, 0.0)
+
+            quality_adjustment = (float(row[8]) - 1.0) * 0.25
+            if row[7] == "disambiguation":
+                quality_adjustment += DISAMBIGUATION_PENALTY
+
+            # Small intent-sensitive bonus within a matched article.
+            if story_intent and (str(row[1]), str(row[2])) in exact_articles:
+                section_and_head = (
+                    str(row[3]) + "\n" + str(row[6])[:240]
+                )
+                if any(term in section_and_head for term in STORY_SECTION_TERMS):
+                    quality_adjustment += INTENT_SECTION_BOOST
+                    match_sources.setdefault(chunk_id, set()).add("intent_section")
+
+            final_score = vector_score + title_boost + quality_adjustment
+            source = "+".join(
+                sorted(match_sources.get(chunk_id, {"unknown"}))
+            )
+            is_exact_article = (str(row[1]), str(row[2])) in exact_articles
+
+            scored.append(
+                (
+                    chunk_id,
+                    final_score,
+                    vector_score,
+                    title_boost,
+                    quality_adjustment,
+                    source,
+                    is_exact_article,
+                )
+            )
+
+        scored.sort(key=lambda item: item[1], reverse=True)
+
+        # Search modes:
+        # auto: exact title -> that article only; otherwise semantic search.
+        # strict: exact title required.
+        # balanced: exact article preferred, related articles may remain.
+        # discovery: broad semantic results.
+        if mode == "strict" and not exact_articles:
+            return []
+
+        if exact_articles and mode in {"auto", "strict"}:
+            scored = [item for item in scored if item[6]]
+
+            if story_intent and scored:
+                by_chunk_no = {
+                    int(metadata[item[0]][4]): item
+                    for item in scored
+                }
+                seed = max(scored, key=lambda item: item[2])
+                seed_no = int(metadata[seed[0]][4])
+                best_vector = float(seed[2])
+                minimum_vector = best_vector - 0.035
+
+                selected = {seed_no: seed}
+                left = seed_no - 1
+                right = seed_no + 1
+
+                while len(selected) < top_k:
+                    choices = []
+                    if left in by_chunk_no:
+                        choices.append((left, by_chunk_no[left]))
+                    if right in by_chunk_no:
+                        choices.append((right, by_chunk_no[right]))
+                    if not choices:
+                        break
+
+                    choices.sort(key=lambda pair: pair[1][2], reverse=True)
+                    chosen_no, chosen = choices[0]
+                    if float(chosen[2]) < minimum_vector:
+                        break
+
+                    selected[chosen_no] = chosen
+                    if chosen_no == left:
+                        left -= 1
+                    else:
+                        right += 1
+
+                scored = sorted(
+                    selected.values(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+
+        elif exact_articles and mode == "balanced":
+            exact_items = [item for item in scored if item[6]]
+            other_items = [item for item in scored if not item[6]]
+            exact_quota = min(top_k, max(2, (top_k * 2) // 3))
+            scored = exact_items[:exact_quota] + other_items
+
+
+        exact_article_limit = top_k
+        ordinary_article_limit = 2
+
+        results: list[Result] = []
+        article_counts: dict[tuple[str, str], int] = {}
+
+        for (
+            chunk_id,
+            final_score,
+            vector_score,
+            title_boost,
+            quality_adjustment,
+            source,
+            is_exact_article,
+        ) in scored:
+            row = metadata[chunk_id]
+            article_key = (str(row[1]), str(row[2]))
+            count = article_counts.get(article_key, 0)
+            article_limit = (
+                exact_article_limit
+                if is_exact_article
+                else ordinary_article_limit
+            )
+            if count >= article_limit:
+                continue
+
+            results.append(
+                Result(
+                    chunk_id=chunk_id,
+                    score=final_score,
+                    vector_score=vector_score,
+                    title_boost=title_boost,
+                    quality_adjustment=quality_adjustment,
+                    title=str(row[1]),
+                    url=str(row[2]),
+                    section=str(row[3]),
+                    chunk_no=int(row[4]),
+                    chunk_count=int(row[5]),
+                    text=str(row[6]),
+                    page_type=str(row[7]),
+                    match_source=source,
+                )
+            )
+            article_counts[article_key] = count + 1
+
+            if len(results) >= top_k:
+                break
+
+        return results
+
+    @staticmethod
+    def _normalize_query_title(query: str) -> str:
+        normalized = normalize_title(query)
+
+        # Remove stacked request/intent suffixes repeatedly.
+        # Example:
+        #   "ファイナルファンタジーXIV のストーリーについて教えて"
+        # becomes:
+        #   "ファイナルファンタジーXIV"
+        suffixes = (
+            "について教えてください",
+            "について教えて",
+            "について知りたい",
+            "について",
+            "を教えてください",
+            "を教えて",
+            "のストーリー",
+            "のあらすじ",
+            "の物語",
+            "のシナリオ",
+            "の世界観",
+            "とは何ですか",
+            "とは",
+        )
+
+        changed = True
+        while changed and normalized:
+            changed = False
+            for suffix in suffixes:
+                if normalized.endswith(suffix):
+                    normalized = normalized[:-len(suffix)].strip()
+                    changed = True
+                    break
+
+        return normalized
