@@ -45,7 +45,7 @@ LocalLLM_with_Wikipedia
 -   Ollamaに登録済みのEmbeddingモデル
 -   回答生成に使用するOllamaモデル
 
-現在のRAGは `ruri-embed`
+現在のRAGは `ruri-v3`
 系のEmbedding設定で生成したデータを前提としています。検索時にも、インデックス生成時と同じEmbeddingモデル・次元数・query
 prefixを使用する必要があります。
 
