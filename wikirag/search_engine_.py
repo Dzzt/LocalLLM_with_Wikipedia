@@ -5,7 +5,6 @@ from pathlib import Path
 import re
 import sqlite3
 import unicodedata
-import zlib
 
 import faiss
 import numpy as np
@@ -107,26 +106,6 @@ def fts_phrase(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-
-def decode_chunk_text(value) -> str:
-    """Return chunk text as str for both legacy TEXT and zlib-compressed BLOB databases."""
-    if isinstance(value, str):
-        return value
-
-    if isinstance(value, memoryview):
-        value = value.tobytes()
-
-    if isinstance(value, (bytes, bytearray)):
-        data = bytes(value)
-        try:
-            return zlib.decompress(data).decode("utf-8")
-        except zlib.error:
-            # Defensive fallback for an unexpected uncompressed BLOB.
-            return data.decode("utf-8")
-
-    return str(value)
-
-
 class SearchEngine:
     def __init__(self, index_dir: Path) -> None:
         self.index_dir = Path(index_dir)
@@ -195,7 +174,7 @@ class SearchEngine:
             "chunk_count": len(rows),
             # The index was built with overlap. It is intentionally retained
             # here so this view represents the exact stored chunks.
-            "text": "\n\n".join(decode_chunk_text(row[2]) for row in rows),
+            "text": "\n\n".join(str(row[2]) for row in rows),
         }
 
     def _rerank_vector(
@@ -471,8 +450,7 @@ class SearchEngine:
             if vector_score is None:
                 vector_score = 0.0
 
-            chunk_text = decode_chunk_text(row[6])
-            searchable = f"{row[3]}\n{chunk_text}"
+            searchable = f"{row[3]}\n{row[6]}"
             searchable_compact = compact_title(searchable)
             lexical = 0.0
             sources = {"article_focus", "vector_exact"}
@@ -501,7 +479,7 @@ class SearchEngine:
                 vector_score=float(vector_score), title_boost=float(lexical),
                 quality_adjustment=float(quality_adjustment), title=str(row[1]),
                 url=str(row[2]), section=str(row[3]), chunk_no=int(row[4]),
-                chunk_count=int(row[5]), text=decode_chunk_text(row[6]), page_type=str(row[7]),
+                chunk_count=int(row[5]), text=str(row[6]), page_type=str(row[7]),
                 match_source="+".join(sorted(sources)),
             ))
         return results
@@ -629,7 +607,7 @@ class SearchEngine:
             # Small intent-sensitive bonus within a matched article.
             if story_intent and (str(row[1]), str(row[2])) in exact_articles:
                 section_and_head = (
-                    str(row[3]) + "\n" + decode_chunk_text(row[6])[:240]
+                    str(row[3]) + "\n" + str(row[6])[:240]
                 )
                 if any(term in section_and_head for term in STORY_SECTION_TERMS):
                     quality_adjustment += INTENT_SECTION_BOOST
@@ -751,7 +729,7 @@ class SearchEngine:
                     section=str(row[3]),
                     chunk_no=int(row[4]),
                     chunk_count=int(row[5]),
-                    text=decode_chunk_text(row[6]),
+                    text=str(row[6]),
                     page_type=str(row[7]),
                     match_source=source,
                 )

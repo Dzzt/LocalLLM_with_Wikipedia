@@ -8,6 +8,7 @@
     --accent: #2f6fed;
     --answer: #eef4ff;
     --source: #f8fafc;
+    --select-option-bg: #e9edf2;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -166,6 +167,24 @@ input[type="number"] {
     background: transparent;
     color: inherit;
     font: inherit;
+}
+
+/* ドロップダウン本体と展開後の選択肢を見やすくする */
+select {
+    background: var(--panel);
+    color: var(--text);
+}
+
+select option {
+    background-color: #e9edf2;
+    color: #1d232a;
+}
+
+@media (prefers-color-scheme: dark) {
+    select option {
+        background-color: #2b313a;
+        color: #eef2f7;
+    }
 }
 
 button {
