@@ -55,7 +55,10 @@ SEARCH_MODES = (
     "article_focus",
 )
 
-EXCLUDE_MODELS = ("ruri", "embed")
+EXCLUDE_MODELS = (
+	"model_embedding",
+	"coding",
+)
 
 
 class BrowserSessionMonitor:

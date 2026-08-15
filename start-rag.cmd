@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ===========================================
-echo   LocalLLM with Wikipedia (ruri-embed)
+echo   LocalLLM with Wikipedia
 echo ===========================================
 
 python webui.py --viewer jsonl --open-browser
