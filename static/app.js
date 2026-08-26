@@ -7,6 +7,8 @@ function byId(id) {
 const ui = {
     ask: byId("ask"),
     quit: byId("quit"),
+    toggleParams: byId("toggleParams"),
+    paramsContainer: byId("paramsContainer"),
     question: byId("question"),
     model: byId("model"),
     topk: byId("topk"),
@@ -94,6 +96,11 @@ function createMetric(name, value) {
 
     box.append(label, metricValue);
     return box;
+}
+
+function toggleParameters() {
+    const isHidden = ui.paramsContainer.classList.toggle("hidden");
+    ui.toggleParams.classList.toggle("active", !isHidden);
 }
 
 function applyConfig(config) {
@@ -343,6 +350,7 @@ async function initialize() {
     }
 }
 
+ui.toggleParams.addEventListener("click", toggleParameters);
 ui.ask.addEventListener("click", ask);
 ui.quit.addEventListener("click", quitApplication);
 ui.question.addEventListener("keydown", (event) => {
@@ -354,7 +362,6 @@ ui.question.addEventListener("keydown", (event) => {
 window.addEventListener("pagehide", (event) => {
     stopHeartbeat();
 
-    // A page stored in the back-forward cache is not actually gone.
     if (!event.persisted) {
         notifyBrowserClosing();
     }

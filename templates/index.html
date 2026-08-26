@@ -19,33 +19,36 @@
 
         <!-- メイン設定パネル -->
         <section class="panel rag-form">
-            <!-- 左側: Question -->
+            <!-- 上段: Question (右端にステータス) -->
             <div class="field-question">
-                <label for="question">Question</label>
+                <div class="question-header">
+                    <label for="question">Question</label>
+                    <span id="status" class="status"></span>
+                </div>
                 <textarea id="question" placeholder="Enter prompt..." tabindex="1" autofocus></textarea>
             </div>
 
-            <!-- 右側上部: Model, Top K -->
-            <div class="field-model">
-                <label for="model">Model</label>
-                <select id="model">
-                    <option value="">Fetching model list...</option>
-                </select>
+            <!-- 下段: Model, Parameters, Ask を同じ段に配置 -->
+            <div class="controls-row">
+                <div class="field-model">
+                    <select id="model">
+                        <option value="">Fetching model list...</option>
+                    </select>
+                </div>
+
+                <div class="actions">
+                    <button id="toggleParams" type="button" class="toggle-button">Parameters ⚙️</button>
+                    <button id="ask" type="button" tabindex="2">Ask</button>
+                </div>
             </div>
 
-            <div class="field-topk">
-                <label for="topk">Top K</label>
-                <input id="topk" type="number" min="1" max="40">
-            </div>
+            <!-- パラメータ詳細エリア -->
+            <div id="paramsContainer" class="params hidden">
+                <div>
+                    <label for="topk">Top K</label>
+                    <input id="topk" type="number" min="1" max="40">
+                </div>
 
-            <!-- 右側下部 (Question横の隙間エリア): Askボタンとステータス -->
-            <div class="actions">
-                <span id="status" class="status"></span>
-                <button id="ask" type="button" tabindex="2">Ask</button>
-            </div>
-
-            <!-- パラメータ詳細エリア (下段に水平展開) -->
-            <div class="params">
                 <div>
                     <label for="searchMode">Search mode</label>
                     <select id="searchMode">

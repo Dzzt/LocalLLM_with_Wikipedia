@@ -65,29 +65,18 @@ h2 {
 
 .quit-button {
     margin-left: 0;
-    
-    /* 背景と枠線を完全に見えなく（透明）にする */
     background: transparent;
     border: none;
     box-shadow: none;
-    
-    /* 文字色（控えめなグレーなどに設定するか、赤系の色のままでも可） */
     color: var(--muted);
-    
-    /* フォントサイズとパディングの調整 */
     font-size: 11px;
     padding: 4px 6px;
-    
-    /* ホバー時のカーソル */
     cursor: pointer;
-    
-    /* クリック時の選択青枠などを消す（お好みで） */
     outline: none;
 }
 
-/* マウスを載せた時に少し強調・下線を表示する（お好みで調整） */
 .quit-button:hover {
-    color: #a93226; /* または var(--text) など */
+    color: #a93226;
     text-decoration: underline;
 }
 
@@ -101,14 +90,14 @@ h2 {
     font-size: 12px;
 }
 
-/* RAGフォーム（Question, Model, TopK, Askボタンのグリッドレイアウト） */
+/* RAGフォーム（Question, Model, Askボタンのグリッドレイアウト） */
 .rag-form {
     display: grid;
     grid-template-areas:
-        "question model topk"
-        "question actions actions"
-        "params   params  params";
-    grid-template-columns: minmax(300px, 1fr) 250px 120px;
+        "question model"
+        "question actions"
+        "params   params";
+    grid-template-columns: minmax(250px, 1fr) auto;
     gap: 12px;
 }
 
@@ -118,34 +107,64 @@ h2 {
     flex-direction: column;
 }
 
+/* Questionラベルとステータスを同階層で左右に配置 */
+.question-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 5px;
+}
+
+.question-header label {
+    margin-bottom: 0;
+}
+
 .field-question textarea {
     flex: 1;
-    min-height: 120px;
+    height: 40px;
+    min-height: 40px;
     resize: vertical;
 }
 
 .field-model {
     grid-area: model;
+    width: 240px;
+    min-width:240px;
 }
 
-.field-topk {
-    grid-area: topk;
-}
-
-/* AskボタンをTop Kの下（Questionの右下の隙間）に配置 */
+/* アクションボタンエリア */
 .actions {
     grid-area: actions;
     display: flex;
     justify-content: flex-end;
     align-items: flex-end;
-    gap: 12px;
+    gap: 10px;
 }
 
-/* パラメータエリア (下段6列) */
+.toggle-button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 10px 14px;
+    font-weight: 500;
+}
+
+.toggle-button:hover {
+    background: var(--source);
+    color: var(--text);
+}
+
+.toggle-button.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--answer);
+}
+
+/* パラメータエリア (下段7列レスポンシブグリッド) */
 .params {
     grid-area: params;
     display: grid;
-    grid-template-columns: repeat(6, minmax(100px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
     gap: 12px;
     margin-top: 6px;
 }
@@ -169,7 +188,6 @@ input[type="number"] {
     font: inherit;
 }
 
-/* ドロップダウン本体と展開後の選択肢を見やすくする */
 select {
     background: var(--panel);
     color: var(--text);
@@ -205,6 +223,7 @@ button:disabled {
 
 .status {
     color: var(--muted);
+    font-size: 11px;
 }
 
 /* メトリクス・結果表示エリア */
@@ -358,7 +377,7 @@ button:disabled {
 }
 
 .hidden {
-    display: none;
+    display: none !important;
 }
 
 .error {
@@ -366,16 +385,31 @@ button:disabled {
     white-space: pre-wrap;
 }
 
-/* スマホ表示時のレスポンシブ対応 */
+/* スマホ・幅広縮小時のレスポンシブ対応 */
 @media (max-width: 760px) {
     .rag-form {
-        grid-template-areas:
-            "question"
-            "model"
-            "topk"
-            "actions"
-            "params";
-        grid-template-columns: 1fr;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .field-question textarea {
+        height: 40px;
+    }
+
+    /* 画面幅を縮小した際、Model と Parameters ボタン類を1行で横並びにする */
+    .controls-row {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .field-model {
+        width: 180px;
+    }
+
+    .actions {
+        flex: 1;
     }
 
     .params {
