@@ -1,4 +1,4 @@
-# LocalLLM_with_Wikipedia
+# LocalLLM_with_RAG
 
 Wikipediaのデータから作成したローカルRAGを検索し、その検索結果をOllama上のローカルLLMへ渡して回答を生成するWeb
 UIです。
