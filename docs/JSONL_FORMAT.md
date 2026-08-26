@@ -247,7 +247,7 @@ builderは、IDが存在しない場合に入力位置をもとにした代替ID
 
 現在のWikipedia向け検索システムでは非常に重要な項目です。
 
-`LocalLLM_with_Wikipedia` では、単純なvector similarityだけでなく、
+`LocalLLM_with_RAG` では、単純なvector similarityだけでなく、
 
 ``` text
 質問

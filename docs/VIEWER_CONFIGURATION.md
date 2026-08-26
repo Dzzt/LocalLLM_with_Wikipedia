@@ -1,6 +1,6 @@
 # Article Viewer Configuration
 
-`LocalLLM_with_Wikipedia`
+`LocalLLM_with_RAG`
 は、回答に使用したWikipedia記事を外部Viewerで開けます。
 
 ViewerはRAG検索とは独立しており、Web
@@ -21,7 +21,7 @@ kiwix
 
 ``` text
 RAG/
-├─ LocalLLM_with_Wikipedia/
+├─ LocalLLM_with_RAG/
 │  ├─ webui.py
 │  └─ wikirag/
 │     ├─ article_viewers.py

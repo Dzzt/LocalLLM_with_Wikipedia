@@ -19,7 +19,7 @@ generate-RAG-from-jsonl
         │
         │ FAISS + SQLite + vector data
         ▼
-LocalLLM_with_Wikipedia
+LocalLLM_with_RAG
         │
         ├─ RAG検索
         ├─ Ollamaで回答生成
@@ -64,7 +64,7 @@ prefixを使用する必要があります。
 RAG/
 ├─ wikipediadump_xml-to-jsonl/
 ├─ generate-RAG-from-jsonl/
-├─ LocalLLM_with_Wikipedia/
+├─ LocalLLM_with_RAG/
 │  ├─ webui.py
 │  ├─ start-rag.cmd
 │  ├─ start-rag-kiwix.cmd
@@ -89,7 +89,7 @@ RAG/
       └─ Kiwix Toolsの関連ファイル
 ```
 
-`LocalLLM_with_Wikipedia` から見ると、
+`LocalLLM_with_RAG` から見ると、
 
 ``` text
 ../data/index
@@ -113,7 +113,7 @@ RAG/data/index/
 
 へ配置します。
 
-`LocalLLM_with_Wikipedia/webui.py` はデフォルトで、
+`LocalLLM_with_RAG/webui.py` はデフォルトで、
 
 ``` text
 ../data/index
@@ -378,7 +378,7 @@ docs/KIWIX_SETUP.md
 
 ------------------------------------------------------------------------
 
-# LocalLLM_with_Wikipedia の各フォルダ
+# LocalLLM_with_RAG の各フォルダ
 
 ## `wikirag/`
 
@@ -693,7 +693,7 @@ WikipediaからダウンロードしたXML dumpをJSONL形式へ変換します�
 変換済みJSONLをチャンク化・Embeddingし、FAISS
 indexとSQLiteデータベースを生成します。
 
-### `LocalLLM_with_Wikipedia`
+### `LocalLLM_with_RAG`
 
 生成済みRAGを検索し、OllamaのローカルLLMで回答を生成します。
 

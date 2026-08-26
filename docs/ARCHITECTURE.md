@@ -1,8 +1,8 @@
-# LocalLLM_with_Wikipedia Architecture
+# LocalLLM_with_RAG Architecture
 
 ## 目的
 
-`LocalLLM_with_Wikipedia` は、事前生成済みのWikipedia
+`LocalLLM_with_RAG` は、事前生成済みのWikipedia
 RAGデータを検索し、Ollama上のローカルLLMへ参考資料として渡して回答を生成する実行システムです。
 
 Wikipediaダンプの変換やRAGインデックスの生成は本リポジトリの責務ではありません。
@@ -16,7 +16,7 @@ generate-RAG-from-jsonl
         │
         │ FAISS + metadata.sqlite + vector data
         ▼
-LocalLLM_with_Wikipedia
+LocalLLM_with_RAG
         │
         ├─ RAG検索
         ├─ Ollamaによる回答生成
@@ -26,7 +26,7 @@ LocalLLM_with_Wikipedia
 ## 基本構成
 
 ``` text
-LocalLLM_with_Wikipedia/
+LocalLLM_with_RAG/
 ├─ webui.py
 ├─ start-rag.cmd
 ├─ start-rag-kiwix.cmd
@@ -48,7 +48,7 @@ LocalLLM_with_Wikipedia/
 
 ``` text
 RAG/
-├─ LocalLLM_with_Wikipedia/
+├─ LocalLLM_with_RAG/
 ├─ data/
 │  ├─ index/
 │  ├─ wikipedia_viewer/

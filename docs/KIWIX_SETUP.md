@@ -2,7 +2,7 @@
 
 ## 概要
 
-KiwixをArticle Viewerとして選択すると、`LocalLLM_with_Wikipedia`
+KiwixをArticle Viewerとして選択すると、`LocalLLM_with_RAG`
 の起動時に `kiwix-serve` を起動し、回答のReferenced
 Articlesから記事をブラウザで開けます。
 
@@ -15,7 +15,7 @@ Kiwix本体とZIMはリポジトリ外へ置きます。
 
 ``` text
 RAG/
-├─ LocalLLM_with_Wikipedia/
+├─ LocalLLM_with_RAG/
 │  ├─ webui.py
 │  ├─ start-rag-kiwix.cmd
 │  └─ wikirag/
