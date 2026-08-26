@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LocalLLM with Wikipedia Web UI."""
+"""LocalLLM with RAG Web UI."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ DEFAULT_STATIC_DIR = BASE_DIR / "static"
 TEMPLATE_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 DEFAULT_MODEL = "Mistral-Nemo-Japanese"
-DEFAULT_TOP_K = 3
+DEFAULT_TOP_K = 2
 DEFAULT_CONTEXT_CHARS = 12_000
 DEFAULT_CONTEXT_LENGTH = 12_288
 DEFAULT_NUM_PREDICT = 8_192
