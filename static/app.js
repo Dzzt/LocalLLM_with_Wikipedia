@@ -314,7 +314,7 @@ async function ask() {
 }
 
 async function quitApplication() {
-    if (!confirm("Terminate LocalLLM with Wikipedia?")) {
+    if (!confirm("Terminate LocalLLM with RAG system?")) {
         return;
     }
 
@@ -332,7 +332,7 @@ async function quitApplication() {
         document.body.innerHTML = `
             <main>
                 <section class="panel">
-                    <h2>LocalLLM with Wikipedia has been terminated.</h2>
+                    <h2>LocalLLM with RAG system has been terminated.</h2>
                     <p>You can close this tab.</p>
                 </section>
             </main>
